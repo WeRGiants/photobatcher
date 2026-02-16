@@ -9,6 +9,9 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image, ImageEnhance
 
+# Protect against extremely large images
+Image.MAX_IMAGE_PIXELS = 50_000_000
+
 app = FastAPI()
 
 UPLOAD_DIR = "temp_uploads"
@@ -28,11 +31,15 @@ def enhance_image(image: Image.Image) -> Image.Image:
 
 def resize_for_platform(image: Image.Image, platform: str) -> Image.Image:
     if platform == "ebay":
-        return image.resize((1600, 1600))
-    if platform == "poshmark":
-        return image.resize((1080, 1080))
-    if platform == "mercari":
-        return image.resize((1200, 1200))
+        max_size = (1600, 1600)
+    elif platform == "poshmark":
+        max_size = (1080, 1080)
+    elif platform == "mercari":
+        max_size = (1200, 1200)
+    else:
+        return image
+
+    image.thumbnail(max_size, Image.LANCZOS)
     return image
 
 
@@ -165,20 +172,33 @@ async def process_images(
         with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
 
-    # Process per platform
+    # Process images safely
     for platform in platforms:
         platform_folder = os.path.join(PROCESSED_DIR, platform)
         os.makedirs(platform_folder, exist_ok=True)
 
         for filename in os.listdir(UPLOAD_DIR):
             img_path = os.path.join(UPLOAD_DIR, filename)
-            img = Image.open(img_path).convert("RGB")
 
-            img = enhance_image(img)
-            img = resize_for_platform(img, platform)
+            try:
+                with Image.open(img_path) as img:
+                    img = img.convert("RGB")
 
-            output_path = os.path.join(platform_folder, filename)
-            img.save(output_path, quality=88, optimize=True)
+                    img = enhance_image(img)
+                    img = resize_for_platform(img, platform)
+
+                    output_path = os.path.join(platform_folder, filename)
+
+                    img.save(
+                        output_path,
+                        format="JPEG",
+                        quality=85,
+                        optimize=True,
+                        progressive=True
+                    )
+
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
 
     # Create ZIP with dated parent folder
     zip_buffer = BytesIO()
