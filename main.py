@@ -91,7 +91,7 @@ def resize_platform(img: Image.Image, platform: str) -> Image.Image:
 
 
 # =====================================================
-# FRONTEND (PREMIUM RESTORED)
+# FRONTEND
 # =====================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -129,12 +129,13 @@ async def home():
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
+    <!-- LEFT -->
     <div class="bg-white p-6 rounded-2xl border">
       <form id="form" class="space-y-6">
 
         <div>
           <label class="block font-semibold mb-2 text-sm">Item title</label>
-          <input name="item_title" type="text"
+          <input id="title" name="item_title" type="text"
                  class="w-full border rounded-xl px-4 py-3"
                  placeholder="e.g. Nike Air Max 90"/>
         </div>
@@ -157,6 +158,14 @@ async def home():
           </div>
         </div>
 
+        <!-- Export Filename Preview -->
+        <div class="bg-gray-50 border rounded-xl p-4">
+          <p class="text-xs text-gray-500 font-semibold">Export file name</p>
+          <p id="exportName" class="mt-1 font-mono text-sm text-gray-900">
+            Batch_PhotoBatcher_YYYY-MM-DD.zip
+          </p>
+        </div>
+
         <button class="w-full bg-black text-white rounded-xl py-3 font-semibold">
           Process Photos
         </button>
@@ -164,6 +173,7 @@ async def home():
       </form>
     </div>
 
+    <!-- RIGHT -->
     <div class="bg-white p-6 rounded-2xl border">
       <h2 class="font-semibold text-sm mb-4">Preview</h2>
       <div id="grid" class="grid grid-cols-3 gap-4"></div>
@@ -179,6 +189,23 @@ const drop = document.getElementById("drop");
 const count = document.getElementById("count");
 const grid = document.getElementById("grid");
 const overlay = document.getElementById("overlay");
+const titleInput = document.getElementById("title");
+const exportName = document.getElementById("exportName");
+
+function slugify(text){
+  text = text.trim();
+  if(!text) return "Batch";
+  return text.replace(/[^A-Za-z0-9]/g,"_").replace(/_+/g,"_").replace(/^_|_$/g,"");
+}
+
+function updateExportName(){
+  const today = new Date().toISOString().slice(0,10);
+  const name = slugify(titleInput.value || "Batch");
+  exportName.textContent = name + "_PhotoBatcher_" + today + ".zip";
+}
+
+titleInput.addEventListener("input", updateExportName);
+updateExportName();
 
 function render(files){
   grid.innerHTML = "";
@@ -217,7 +244,7 @@ document.getElementById("form").onsubmit = async function(e){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "PhotoBatcher.zip";
+  a.download = exportName.textContent;
   a.click();
 };
 </script>
