@@ -4,7 +4,7 @@ import shutil
 import zipfile
 import datetime
 from io import BytesIO
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -39,25 +39,17 @@ def slugify(title: str) -> str:
 # =====================================================
 
 def level_background(img: Image.Image) -> Image.Image:
-    """
-    Lightens near-white / low-saturation background
-    without affecting subject tones.
-    """
     arr = np.array(img).astype(np.float32)
 
-    # Convert to HSV
     hsv = Image.fromarray(arr.astype(np.uint8)).convert("HSV")
     hsv_arr = np.array(hsv).astype(np.float32)
 
-    h, s, v = hsv_arr[:,:,0], hsv_arr[:,:,1], hsv_arr[:,:,2]
+    h, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
 
-    # Detect light + low saturation areas (background)
     mask = (v > 200) & (s < 60)
-
-    # Lift value toward white
     v[mask] = np.clip(v[mask] * 1.08 + 10, 0, 255)
 
-    hsv_arr[:,:,2] = v
+    hsv_arr[:, :, 2] = v
 
     new_img = Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
     return new_img
@@ -122,14 +114,31 @@ def resize_platform(img: Image.Image, platform: str) -> Image.Image:
 
 
 # =====================================================
-# FRONTEND (UNCHANGED — KEEP CURRENT PREMIUM UI)
+# FRONTEND (TEMP STABLE TEST PAGE)
 # =====================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    with open("main.py", "r"):
-        pass
-    return app.routes[0].endpoint.__code__.co_consts[1]
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>PhotoBatcher</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-100 flex items-center justify-center h-screen">
+        <div class="text-center">
+            <h1 class="text-4xl font-bold mb-4">PhotoBatcher</h1>
+            <p class="text-gray-600">Backend is running successfully.</p>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 # =====================================================
@@ -150,8 +159,11 @@ async def process(
     title = slugify(item_title)
     date = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    if os.path.exists(UPLOAD_DIR): shutil.rmtree(UPLOAD_DIR)
-    if os.path.exists(PROCESSED_DIR): shutil.rmtree(PROCESSED_DIR)
+    if os.path.exists(UPLOAD_DIR):
+        shutil.rmtree(UPLOAD_DIR)
+    if os.path.exists(PROCESSED_DIR):
+        shutil.rmtree(PROCESSED_DIR)
+
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
@@ -173,26 +185,28 @@ async def process(
                 img = resize_platform(img, platform)
 
                 base, _ = os.path.splitext(name)
-                img.save(os.path.join(folder, base+".jpg"),
-                         format="JPEG",
-                         quality=85,
-                         optimize=True,
-                         progressive=True)
+                img.save(
+                    os.path.join(folder, base + ".jpg"),
+                    format="JPEG",
+                    quality=85,
+                    optimize=True,
+                    progressive=True,
+                )
 
     zip_buffer = BytesIO()
     parent = f"{title}_PhotoBatcher_{date}"
 
-    with zipfile.ZipFile(zip_buffer,"w",zipfile.ZIP_DEFLATED) as zipf:
-        for root,_,files_on_disk in os.walk(PROCESSED_DIR):
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files_on_disk in os.walk(PROCESSED_DIR):
             for f in files_on_disk:
-                full = os.path.join(root,f)
-                rel = os.path.relpath(full,PROCESSED_DIR)
-                zipf.write(full,os.path.join(parent,rel))
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, PROCESSED_DIR)
+                zipf.write(full, os.path.join(parent, rel))
 
     zip_buffer.seek(0)
 
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'}
+        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
     )
