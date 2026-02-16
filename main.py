@@ -15,9 +15,10 @@ UPLOAD_DIR = "temp_uploads"
 PROCESSED_DIR = "temp_processed"
 
 
-# -----------------------------
-# IMAGE PROCESSING FUNCTIONS
-# -----------------------------
+# =====================================================
+# IMAGE PROCESSING
+# =====================================================
+
 def enhance_image(image: Image.Image) -> Image.Image:
     image = ImageEnhance.Brightness(image).enhance(1.05)
     image = ImageEnhance.Contrast(image).enhance(1.1)
@@ -35,9 +36,10 @@ def resize_for_platform(image: Image.Image, platform: str) -> Image.Image:
     return image
 
 
-# -----------------------------
+# =====================================================
 # FRONTEND
-# -----------------------------
+# =====================================================
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
@@ -134,14 +136,16 @@ form.addEventListener("submit", async function(e) {
 """
 
 
-# -----------------------------
+# =====================================================
 # PROCESS ENDPOINT
-# -----------------------------
+# =====================================================
+
 @app.post("/process")
 async def process_images(
     files: List[UploadFile] = File(...),
     platforms: List[str] = Form(None)
 ):
+
     if not platforms:
         raise HTTPException(status_code=400, detail="No platform selected")
 
@@ -161,7 +165,7 @@ async def process_images(
         with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
 
-    # Process images
+    # Process per platform
     for platform in platforms:
         platform_folder = os.path.join(PROCESSED_DIR, platform)
         os.makedirs(platform_folder, exist_ok=True)
@@ -176,14 +180,18 @@ async def process_images(
             output_path = os.path.join(platform_folder, filename)
             img.save(output_path, quality=88, optimize=True)
 
-    # Create ZIP in memory
+    # Create ZIP with dated parent folder
     zip_buffer = BytesIO()
+    date_folder = datetime.datetime.now().strftime("PhotoBatcher_%Y-%m-%d")
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for root, _, files in os.walk(PROCESSED_DIR):
             for file in files:
                 full_path = os.path.join(root, file)
                 relative_path = os.path.relpath(full_path, PROCESSED_DIR)
-                zip_file.write(full_path, relative_path)
+
+                zip_path = os.path.join(date_folder, relative_path)
+                zip_file.write(full_path, zip_path)
 
     zip_buffer.seek(0)
 
