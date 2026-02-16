@@ -43,7 +43,7 @@ def level_background(img: Image.Image) -> Image.Image:
     hsv = Image.fromarray(arr.astype(np.uint8)).convert("HSV")
     hsv_arr = np.array(hsv).astype(np.float32)
 
-    h, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
+    _, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
     mask = (v > 200) & (s < 60)
     v[mask] = np.clip(v[mask] * 1.08 + 10, 0, 255)
 
@@ -126,6 +126,7 @@ async def home():
 
       <label class="block mb-2 font-medium">Item Title</label>
       <input id="title"
+             placeholder="Nike Air Max 90"
              class="w-full border border-gray-200 rounded-lg p-3 mb-4"/>
 
       <label class="block mb-2 font-medium">Photos</label>
@@ -139,7 +140,7 @@ async def home():
           <input type="checkbox" value="poshmark" checked> Poshmark
         </label>
         <label>
-          <input type="checkbox" value="mercari"> Mercari
+          <input type="checkbox" value="mercari" checked> Mercari
         </label>
       </div>
 
@@ -157,13 +158,19 @@ async def home():
         Process Photos
       </button>
 
+      <div id="status" class="mt-3 text-sm text-gray-600"></div>
+
     </div>
 
     <!-- RIGHT -->
     <div class="bg-white p-6 rounded-xl shadow">
-      <h2 class="font-semibold mb-4">Preview (Max 24)</h2>
-      <div id="previewGrid"
-           class="grid grid-cols-3 sm:grid-cols-4 gap-3"></div>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold">Preview (Max 24)</h2>
+        <div id="countBadge" class="text-sm text-gray-500"></div>
+      </div>
+
+      <!-- ✅ Uniform square thumbnails grid -->
+      <div id="previewGrid" class="grid grid-cols-4 gap-3"></div>
     </div>
 
   </div>
@@ -175,6 +182,7 @@ async def home():
   <div class="bg-white p-8 rounded-xl shadow-xl text-center">
     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
     <p class="font-medium">Processing your photos...</p>
+    <p class="text-gray-500 text-sm mt-1">This can take a moment for large batches.</p>
   </div>
 </div>
 
@@ -185,11 +193,15 @@ const btn = document.getElementById("processBtn");
 const modal = document.getElementById("modal");
 const titleEl = document.getElementById("title");
 const outEl = document.getElementById("outputName");
+const statusEl = document.getElementById("status");
+const countBadge = document.getElementById("countBadge");
 
-function slugify(str){
+function jsSlugify(str){
   str = (str||"").trim();
   if(!str) return "Batch";
-  return str.replace(/\\s+/g,"_").replace(/[^A-Za-z0-9_\\-]/g,"");
+  str = str.replace(/\\s+/g,"_").replace(/[^A-Za-z0-9_\\-]/g,"");
+  str = str.replace(/_+/g,"_").replace(/^_+|_+$/g,"");
+  return str || "Batch";
 }
 
 function today(){
@@ -198,56 +210,78 @@ function today(){
 }
 
 function updateName(){
-  outEl.textContent = slugify(titleEl.value)+"_PhotoBatcher_"+today()+".zip";
+  outEl.textContent = jsSlugify(titleEl.value)+"_PhotoBatcher_"+today()+".zip";
 }
 
-titleEl.addEventListener("input",updateName);
-updateName();
+function renderPreviews(){
+  grid.innerHTML = "";
+  const files = Array.from(input.files || []).slice(0,24);
+  countBadge.textContent = files.length ? (files.length + " selected") : "";
 
-input.addEventListener("change",()=>{
-  grid.innerHTML="";
-  Array.from(input.files).slice(0,24).forEach(file=>{
-    const reader=new FileReader();
-    reader.onload=e=>{
-      const img=document.createElement("img");
-      img.src=e.target.result;
-      img.className="rounded-lg object-cover aspect-square";
-      grid.appendChild(img);
+  files.forEach(file=>{
+    const reader = new FileReader();
+    reader.onload = e => {
+      // ✅ square wrapper with fixed aspect ratio
+      const wrap = document.createElement("div");
+      wrap.className = "w-full overflow-hidden rounded-lg bg-gray-100 border border-gray-200";
+      wrap.style.aspectRatio = "1 / 1";
+
+      const img = document.createElement("img");
+      img.src = e.target.result;
+      img.className = "w-full h-full object-cover"; // ✅ forces same size
+
+      wrap.appendChild(img);
+      grid.appendChild(wrap);
     };
     reader.readAsDataURL(file);
   });
+}
+
+titleEl.addEventListener("input", updateName);
+updateName();
+
+input.addEventListener("change", () => {
+  statusEl.textContent = input.files.length ? (input.files.length + " files selected.") : "";
+  renderPreviews();
 });
 
-btn.addEventListener("click",async()=>{
-  if(!input.files.length) return alert("Select images first.");
+btn.addEventListener("click", async () => {
+  if (!input.files.length) return alert("Select images first.");
+  if (input.files.length > 24) return alert("Maximum 24 images.");
 
-  const form=new FormData();
-  Array.from(input.files).forEach(f=>form.append("files",f));
+  const checked = document.querySelectorAll("input[type=checkbox]:checked");
+  if (!checked.length) return alert("Select at least one platform.");
 
-  document.querySelectorAll("input[type=checkbox]:checked")
-    .forEach(cb=>form.append("platforms",cb.value));
-
-  form.append("item_title",titleEl.value);
+  const form = new FormData();
+  Array.from(input.files).forEach(f => form.append("files", f));
+  checked.forEach(cb => form.append("platforms", cb.value));
+  form.append("item_title", titleEl.value);
 
   modal.classList.remove("hidden");
   modal.classList.add("flex");
 
-  const res=await fetch("/process",{method:"POST",body:form});
+  const res = await fetch("/process", { method: "POST", body: form });
 
   modal.classList.add("hidden");
   modal.classList.remove("flex");
 
-  if(!res.ok) return alert("Error processing images.");
+  if (!res.ok) {
+    const txt = await res.text();
+    alert("Error: " + txt);
+    return;
+  }
 
-  const blob=await res.blob();
-  const url=window.URL.createObjectURL(blob);
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
 
-  const a=document.createElement("a");
-  a.href=url;
-  a.download=outEl.textContent;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = outEl.textContent;
   document.body.appendChild(a);
   a.click();
   a.remove();
+
+  window.URL.revokeObjectURL(url);
 });
 </script>
 
@@ -255,6 +289,10 @@ btn.addEventListener("click",async()=>{
 </html>
 """
 
+
+# ===============================
+# PROCESS
+# ===============================
 
 @app.post("/process")
 async def process(
@@ -296,23 +334,28 @@ async def process(
                 img = resize_platform(img, platform)
 
                 base, _ = os.path.splitext(name)
-                img.save(os.path.join(folder, base + ".jpg"),
-                         format="JPEG", quality=85)
+                img.save(
+                    os.path.join(folder, base + ".jpg"),
+                    format="JPEG",
+                    quality=85,
+                    optimize=True,
+                    progressive=True,
+                )
 
     zip_buffer = BytesIO()
     parent = f"{title}_PhotoBatcher_{date}"
 
-    with zipfile.ZipFile(zip_buffer,"w",zipfile.ZIP_DEFLATED) as zipf:
-        for root,_,files_on_disk in os.walk(PROCESSED_DIR):
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files_on_disk in os.walk(PROCESSED_DIR):
             for f in files_on_disk:
-                full=os.path.join(root,f)
-                rel=os.path.relpath(full,PROCESSED_DIR)
-                zipf.write(full,os.path.join(parent,rel))
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, PROCESSED_DIR)
+                zipf.write(full, os.path.join(parent, rel))
 
     zip_buffer.seek(0)
 
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'}
+        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
     )
