@@ -4,7 +4,7 @@ import zipfile
 from io import BytesIO
 from typing import List
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image, ImageEnhance
 
@@ -13,12 +13,9 @@ app = FastAPI()
 UPLOAD_DIR = "temp_uploads"
 PROCESSED_DIR = "temp_processed"
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(PROCESSED_DIR, exist_ok=True)
-
 
 # -----------------------------
-# IMAGE PROCESSING FUNCTION
+# IMAGE PROCESSING FUNCTIONS
 # -----------------------------
 def enhance_image(image: Image.Image) -> Image.Image:
     image = ImageEnhance.Brightness(image).enhance(1.05)
@@ -38,7 +35,7 @@ def resize_for_platform(image: Image.Image, platform: str) -> Image.Image:
 
 
 # -----------------------------
-# FRONTEND
+# FRONTEND ROUTE
 # -----------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -98,7 +95,8 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
     });
 
     if (!response.ok) {
-        alert("Error processing images.");
+        const errorText = await response.text();
+        alert("Error: " + errorText);
         return;
     }
 
@@ -125,20 +123,29 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
 @app.post("/process")
 async def process_images(
     files: List[UploadFile] = File(...),
-    platforms: List[str] = Form(...)
+    platforms: List[str] = Form(None)
 ):
-    shutil.rmtree(UPLOAD_DIR)
-    shutil.rmtree(PROCESSED_DIR)
+    # Validate platform selection
+    if not platforms:
+        raise HTTPException(status_code=400, detail="No platform selected")
+
+    # Clean temp folders safely
+    if os.path.exists(UPLOAD_DIR):
+        shutil.rmtree(UPLOAD_DIR)
+
+    if os.path.exists(PROCESSED_DIR):
+        shutil.rmtree(PROCESSED_DIR)
+
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-    # Save uploads
+    # Save uploaded files
     for file in files:
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
 
-    # Process per platform
+    # Process images per platform
     for platform in platforms:
         platform_folder = os.path.join(PROCESSED_DIR, platform)
         os.makedirs(platform_folder, exist_ok=True)
@@ -167,5 +174,7 @@ async def process_images(
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=processed_images.zip"}
+        headers={
+            "Content-Disposition": "attachment; filename=processed_images.zip"
+        }
     )
