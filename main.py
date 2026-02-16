@@ -35,7 +35,7 @@ def slugify(title: str) -> str:
 
 
 # =====================================================
-# Enhancement Pipeline (UNCHANGED)
+# Enhancement Pipeline
 # =====================================================
 
 def level_background(img: Image.Image) -> Image.Image:
@@ -220,12 +220,12 @@ function renderPreviews(){
     reader.onload = e => {
 
       const wrap = document.createElement("div");
-      wrap.className = "w-full rounded-lg bg-white border border-gray-200 flex items-center justify-center";
+      wrap.className = "w-full rounded-lg overflow-hidden border border-gray-200 bg-gray-100";
       wrap.style.aspectRatio = "1 / 1";
 
       const img = document.createElement("img");
       img.src = e.target.result;
-      img.className = "max-w-full max-h-full object-contain";
+      img.className = "w-full h-full object-cover object-center transition-transform duration-200 hover:scale-105";
 
       wrap.appendChild(img);
       grid.appendChild(wrap);
@@ -356,4 +356,3 @@ async def process(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
     )
-
