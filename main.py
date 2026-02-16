@@ -1,6 +1,7 @@
 import os
 import shutil
 import zipfile
+import datetime
 from io import BytesIO
 from typing import List
 
@@ -35,7 +36,7 @@ def resize_for_platform(image: Image.Image, platform: str) -> Image.Image:
 
 
 # -----------------------------
-# FRONTEND ROUTE
+# FRONTEND
 # -----------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -84,31 +85,47 @@ async def home():
   </div>
 
 <script>
-document.getElementById("uploadForm").addEventListener("submit", async function(e) {
+const form = document.getElementById("uploadForm");
+const button = form.querySelector("button");
+
+form.addEventListener("submit", async function(e) {
     e.preventDefault();
+
+    button.disabled = true;
+    button.innerHTML = "Processing... ⏳";
 
     const formData = new FormData(this);
 
-    const response = await fetch("/process", {
-        method: "POST",
-        body: formData
-    });
+    try {
+        const response = await fetch("/process", {
+            method: "POST",
+            body: formData
+        });
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        alert("Error: " + errorText);
-        return;
+        if (!response.ok) {
+            const errorText = await response.text();
+            alert("Error: " + errorText);
+            button.disabled = false;
+            button.innerHTML = "Process Photos";
+            return;
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "PhotoBatcher_Export.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+    } catch (error) {
+        alert("Something went wrong.");
     }
 
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "processed_images.zip";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    button.disabled = false;
+    button.innerHTML = "Process Photos";
 });
 </script>
 
@@ -125,7 +142,6 @@ async def process_images(
     files: List[UploadFile] = File(...),
     platforms: List[str] = Form(None)
 ):
-    # Validate platform selection
     if not platforms:
         raise HTTPException(status_code=400, detail="No platform selected")
 
@@ -139,13 +155,13 @@ async def process_images(
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-    # Save uploaded files
+    # Save uploads
     for file in files:
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
 
-    # Process images per platform
+    # Process images
     for platform in platforms:
         platform_folder = os.path.join(PROCESSED_DIR, platform)
         os.makedirs(platform_folder, exist_ok=True)
@@ -158,7 +174,7 @@ async def process_images(
             img = resize_for_platform(img, platform)
 
             output_path = os.path.join(platform_folder, filename)
-            img.save(output_path, quality=95)
+            img.save(output_path, quality=88, optimize=True)
 
     # Create ZIP in memory
     zip_buffer = BytesIO()
@@ -171,10 +187,12 @@ async def process_images(
 
     zip_buffer.seek(0)
 
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
         headers={
-            "Content-Disposition": "attachment; filename=processed_images.zip"
+            "Content-Disposition": f"attachment; filename=PhotoBatcher_{timestamp}.zip"
         }
     )
