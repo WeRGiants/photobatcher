@@ -4,7 +4,7 @@ import shutil
 import zipfile
 import datetime
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -39,21 +39,13 @@ def slugify_title(title: str) -> str:
 
 def smart_crop_whitespace(img: Image.Image, padding_ratio: float = 0.06) -> Image.Image:
     """
-    Trims light/white background whitespace by finding a bounding box
+    Trims near-white background whitespace by finding a bounding box
     of non-white pixels, then adds slight padding for a premium look.
-
-    Works best for typical reseller photos on light backgrounds.
     """
-    # Convert to grayscale
     gray = img.convert("L")
-
-    # Assume background is near-white; create white background reference
     bg = Image.new("L", gray.size, 255)
 
-    # Difference from white background
     diff = ImageChops.difference(gray, bg)
-
-    # Increase contrast slightly so near-white isn't counted as subject
     diff = ImageEnhance.Contrast(diff).enhance(2.0)
 
     bbox = diff.getbbox()
@@ -72,11 +64,28 @@ def smart_crop_whitespace(img: Image.Image, padding_ratio: float = 0.06) -> Imag
     right = min(img.width, right + pad_w)
     lower = min(img.height, lower + pad_h)
 
-    # Guardrail: don't crop to something absurdly tiny
     if (right - left) < 50 or (lower - upper) < 50:
         return img
 
     return img.crop((left, upper, right, lower))
+
+
+# =====================================================
+# SQUARE CANVAS CENTERING (PREMIUM FRAMING)
+# =====================================================
+
+def to_square_canvas(img: Image.Image, background: Tuple[int, int, int] = (255, 255, 255)) -> Image.Image:
+    """
+    Places the image onto a square canvas with a solid background.
+    Produces consistent framing across all photos/platforms.
+    """
+    w, h = img.size
+    side = max(w, h)
+    canvas = Image.new("RGB", (side, side), background)
+    x = (side - w) // 2
+    y = (side - h) // 2
+    canvas.paste(img, (x, y))
+    return canvas
 
 
 # =====================================================
@@ -99,19 +108,23 @@ def enhance_preview(image: Image.Image) -> Image.Image:
     return image
 
 
-def resize_for_platform(image: Image.Image, platform: str) -> Image.Image:
-    """Preserve aspect ratio, avoid upscaling, reduce memory usage."""
+def resize_for_platform_square(image: Image.Image, platform: str) -> Image.Image:
+    """
+    Resize a square canvas to platform specs.
+    Uses LANCZOS; avoids upscaling wherever possible by design
+    (but square canvas guarantees consistent framing).
+    """
     if platform == "ebay":
-        max_size = (1600, 1600)
+        size = (1600, 1600)
     elif platform == "poshmark":
-        max_size = (1080, 1080)
+        size = (1080, 1080)
     elif platform == "mercari":
-        max_size = (1200, 1200)
+        size = (1200, 1200)
     else:
         return image
 
-    image.thumbnail(max_size, Image.LANCZOS)
-    return image
+    # If image already larger/smaller, just resize to exact square output.
+    return image.resize(size, Image.LANCZOS)
 
 
 # =====================================================
@@ -146,7 +159,7 @@ async def home():
     <div class="flex items-center justify-between mb-8">
       <div>
         <h1 class="text-3xl font-bold tracking-tight text-gray-900">PhotoBatcher</h1>
-        <p class="text-gray-600 mt-1">Batch clean, resize, and export marketplace-ready photos in one click.</p>
+        <p class="text-gray-600 mt-1">Batch clean, crop, frame, resize, and export marketplace-ready photos in one click.</p>
       </div>
       <div class="text-sm text-gray-500">
         <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white shadow-sm border">
@@ -172,27 +185,22 @@ async def home():
               maxlength="80"
             />
             <p class="mt-2 text-xs text-gray-500">
-              Used to name your export folder. Spaces will become underscores.
+              Used to name your export folder. Spaces become underscores.
             </p>
           </div>
 
           <!-- Drag & Drop -->
           <div>
             <label class="block text-sm font-semibold text-gray-900 mb-2">Photos</label>
-
             <input id="fileInput" type="file" name="files" multiple required class="hidden" />
 
-            <div
-              id="dropzone"
-              class="group cursor-pointer rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 hover:bg-gray-100 transition p-6"
-            >
+            <div id="dropzone" class="group cursor-pointer rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 hover:bg-gray-100 transition p-6">
               <div class="flex items-center gap-4">
                 <div class="w-12 h-12 rounded-xl bg-white border flex items-center justify-center">
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-gray-800" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01.88-7.903A5 5 0 0115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                   </svg>
                 </div>
-
                 <div class="flex-1">
                   <p class="font-semibold text-gray-900">Drag & drop images here</p>
                   <p class="text-sm text-gray-600">or click to select files</p>
@@ -221,7 +229,7 @@ async def home():
                 <span class="text-sm font-medium">Mercari</span>
               </label>
             </div>
-            <p class="mt-2 text-xs text-gray-500">We’ll export a separate folder per platform inside the ZIP.</p>
+            <p class="mt-2 text-xs text-gray-500">We export a folder per platform inside the ZIP.</p>
           </div>
 
           <!-- Batch Name Preview -->
@@ -231,16 +239,13 @@ async def home():
           </div>
 
           <!-- Submit -->
-          <button
-            id="processBtn"
-            type="submit"
-            class="w-full rounded-xl bg-black text-white py-3 font-semibold hover:bg-gray-800 transition disabled:opacity-60 disabled:cursor-not-allowed"
-          >
+          <button id="processBtn" type="submit"
+            class="w-full rounded-xl bg-black text-white py-3 font-semibold hover:bg-gray-800 transition disabled:opacity-60 disabled:cursor-not-allowed">
             Process Photos
           </button>
 
           <p class="text-xs text-gray-500 text-center">
-            Tip: For best results, use well-lit photos. Output is optimized for marketplace upload speed.
+            Tip: This tool auto-crops whitespace and centers your item for consistent framing.
           </p>
         </form>
       </div>
@@ -252,7 +257,6 @@ async def home():
           <span id="previewHint" class="text-xs text-gray-500">Upload images to see thumbnails</span>
         </div>
 
-        <!-- Thumbnails -->
         <div id="thumbGrid" class="grid grid-cols-3 gap-3"></div>
 
         <div id="emptyState" class="mt-10 text-center text-gray-500">
@@ -278,14 +282,8 @@ async def home():
             <div class="absolute inset-y-0 left-1/2 w-[2px] bg-white/80 pointer-events-none" id="divider"></div>
           </div>
 
-          <input
-            id="slider"
-            type="range"
-            min="0"
-            max="100"
-            value="50"
-            class="mt-4 w-full accent-black"
-          />
+          <input id="slider" type="range" min="0" max="100" value="50"
+            class="mt-4 w-full accent-black" />
 
           <div class="mt-2 flex justify-between text-xs text-gray-500">
             <span>Original</span>
@@ -422,12 +420,10 @@ async def home():
     renderThumbs(fileInput.files);
 
     if (count > 0) {
-      // Before = local first image (instant)
       const first = fileInput.files[0];
       const beforeUrl = URL.createObjectURL(first);
       beforeImg.src = beforeUrl;
 
-      // After = server enhanced preview
       fetchPreview(first);
     }
   }
@@ -504,7 +500,7 @@ async def home():
 
 
 # =====================================================
-# PREVIEW ENDPOINT (WOW PREVIEW)
+# PREVIEW ENDPOINT (WOW PREVIEW: crop + square + strong enhance)
 # =====================================================
 
 @app.post("/preview")
@@ -513,11 +509,11 @@ async def preview_image(file: UploadFile = File(...)):
 
     try:
         with Image.open(BytesIO(data)) as img:
-            img = ImageOps.exif_transpose(img)  # auto-rotate iPhone photos
+            img = ImageOps.exif_transpose(img)  # iPhone rotation
             img = img.convert("RGB")
 
-            # Smart crop + stronger enhancement for preview
             img = smart_crop_whitespace(img)
+            img = to_square_canvas(img, (255, 255, 255))
             img = enhance_preview(img)
 
             # Keep preview fast
@@ -533,7 +529,7 @@ async def preview_image(file: UploadFile = File(...)):
 
 
 # =====================================================
-# PROCESS ENDPOINT (EXPORT)
+# PROCESS ENDPOINT (EXPORT: crop + square + subtle enhance + platform size)
 # =====================================================
 
 @app.post("/process")
@@ -575,10 +571,13 @@ async def process_images(
                     img = ImageOps.exif_transpose(img)
                     img = img.convert("RGB")
 
-                    # Smart crop + subtle export enhancement
+                    # Premium framing pipeline
                     img = smart_crop_whitespace(img)
+                    img = to_square_canvas(img, (255, 255, 255))
                     img = enhance_export(img)
-                    img = resize_for_platform(img, platform)
+
+                    # Platform output size (exact square)
+                    img = resize_for_platform_square(img, platform)
 
                     base_name, _ = os.path.splitext(filename)
                     out_name = f"{base_name}.jpg"
