@@ -37,12 +37,13 @@ async def process_images(
     platforms: str = "ebay"
 ):
     memory_zip = io.BytesIO()
+
     with zipfile.ZipFile(memory_zip, mode="w") as zf:
 
-        for platform in platforms.split(","):
+        for file in files:
+            contents = await file.read()
 
-            for file in files:
-                contents = await file.read()
+            for platform in platforms.split(","):
                 image = Image.open(io.BytesIO(contents)).convert("RGB")
 
                 image = enhance_image(image)
