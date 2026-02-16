@@ -20,9 +20,9 @@ PROCESSED_DIR = "temp_processed"
 MAX_IMAGES = 24
 
 
-# ===============================
+# =====================================================
 # Utilities
-# ===============================
+# =====================================================
 
 def slugify(title: str) -> str:
     title = (title or "").strip()
@@ -34,9 +34,9 @@ def slugify(title: str) -> str:
     return title or "Batch"
 
 
-# ===============================
-# Enhancement Pipeline
-# ===============================
+# =====================================================
+# Enhancement Pipeline (UNCHANGED)
+# =====================================================
 
 def level_background(img: Image.Image) -> Image.Image:
     arr = np.array(img).astype(np.float32)
@@ -98,9 +98,9 @@ def resize_platform(img: Image.Image, platform: str) -> Image.Image:
     return img.resize((sizes[platform], sizes[platform]), Image.LANCZOS)
 
 
-# ===============================
+# =====================================================
 # UI
-# ===============================
+# =====================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -144,7 +144,6 @@ async def home():
         </label>
       </div>
 
-      <!-- OUTPUT FILENAME -->
       <div class="mb-4">
         <div class="text-xs uppercase text-gray-500 mb-1">Output file</div>
         <div id="outputName"
@@ -169,7 +168,6 @@ async def home():
         <div id="countBadge" class="text-sm text-gray-500"></div>
       </div>
 
-      <!-- ✅ Uniform square thumbnails grid -->
       <div id="previewGrid" class="grid grid-cols-4 gap-3"></div>
     </div>
 
@@ -182,7 +180,6 @@ async def home():
   <div class="bg-white p-8 rounded-xl shadow-xl text-center">
     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
     <p class="font-medium">Processing your photos...</p>
-    <p class="text-gray-500 text-sm mt-1">This can take a moment for large batches.</p>
   </div>
 </div>
 
@@ -221,14 +218,14 @@ function renderPreviews(){
   files.forEach(file=>{
     const reader = new FileReader();
     reader.onload = e => {
-      // ✅ square wrapper with fixed aspect ratio
+
       const wrap = document.createElement("div");
-      wrap.className = "w-full overflow-hidden rounded-lg bg-gray-100 border border-gray-200";
+      wrap.className = "w-full rounded-lg bg-white border border-gray-200 flex items-center justify-center";
       wrap.style.aspectRatio = "1 / 1";
 
       const img = document.createElement("img");
       img.src = e.target.result;
-      img.className = "w-full h-full object-cover"; // ✅ forces same size
+      img.className = "max-w-full max-h-full object-contain";
 
       wrap.appendChild(img);
       grid.appendChild(wrap);
@@ -290,9 +287,9 @@ btn.addEventListener("click", async () => {
 """
 
 
-# ===============================
+# =====================================================
 # PROCESS
-# ===============================
+# =====================================================
 
 @app.post("/process")
 async def process(
@@ -359,3 +356,4 @@ async def process(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
     )
+
