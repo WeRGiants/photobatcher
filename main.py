@@ -28,7 +28,9 @@ def slugify(title: str) -> str:
     title = (title or "").strip()
     if not title:
         return "Batch"
-    title = re.sub(r"[^A-Za-z0-9_\-]", "", title.replace(" ", "_"))
+    title = title.replace(" ", "_")
+    title = re.sub(r"[^A-Za-z0-9_\-]", "", title)
+    title = re.sub(r"_+", "_", title).strip("_")
     return title or "Batch"
 
 
@@ -40,29 +42,45 @@ def level_background(img: Image.Image) -> Image.Image:
     arr = np.array(img).astype(np.float32)
     hsv = Image.fromarray(arr.astype(np.uint8)).convert("HSV")
     hsv_arr = np.array(hsv).astype(np.float32)
-    h, s, v = hsv_arr[:,:,0], hsv_arr[:,:,1], hsv_arr[:,:,2]
+
+    h, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
     mask = (v > 200) & (s < 60)
     v[mask] = np.clip(v[mask] * 1.08 + 10, 0, 255)
-    hsv_arr[:,:,2] = v
+
+    hsv_arr[:, :, 2] = v
     return Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
 
 
-def smart_crop(img: Image.Image) -> Image.Image:
+def smart_crop(img: Image.Image, padding_ratio=0.06) -> Image.Image:
     gray = img.convert("L")
     bg = Image.new("L", gray.size, 255)
+
     diff = ImageChops.difference(gray, bg)
     diff = ImageEnhance.Contrast(diff).enhance(2.0)
+
     bbox = diff.getbbox()
     if not bbox:
         return img
+
     left, top, right, bottom = bbox
+    w = right - left
+    h = bottom - top
+
+    pad_w = int(w * padding_ratio)
+    pad_h = int(h * padding_ratio)
+
+    left = max(0, left - pad_w)
+    top = max(0, top - pad_h)
+    right = min(img.width, right + pad_w)
+    bottom = min(img.height, bottom + pad_h)
+
     return img.crop((left, top, right, bottom))
 
 
 def to_square(img: Image.Image) -> Image.Image:
     side = max(img.size)
-    canvas = Image.new("RGB", (side, side), (255,255,255))
-    canvas.paste(img, ((side-img.width)//2, (side-img.height)//2))
+    canvas = Image.new("RGB", (side, side), (255, 255, 255))
+    canvas.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
     return canvas
 
 
@@ -76,7 +94,7 @@ def enhance(img: Image.Image) -> Image.Image:
 
 
 def resize_platform(img: Image.Image, platform: str) -> Image.Image:
-    sizes = {"ebay":1600,"poshmark":1080,"mercari":1200}
+    sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
     return img.resize((sizes[platform], sizes[platform]), Image.LANCZOS)
 
 
@@ -90,126 +108,153 @@ async def home():
 <!DOCTYPE html>
 <html>
 <head>
-<title>PhotoBatcher</title>
-<script src="https://cdn.tailwindcss.com"></script>
+  <title>PhotoBatcher</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen p-10">
 
 <div class="max-w-6xl mx-auto">
-    <h1 class="text-4xl font-bold mb-2">PhotoBatcher</h1>
-    <p class="text-gray-600 mb-6">
-        Batch clean, resize, and export marketplace-ready photos in one click.
-    </p>
+  <h1 class="text-4xl font-bold mb-2">PhotoBatcher</h1>
+  <p class="text-gray-600 mb-6">
+    Batch clean, resize, and export marketplace-ready photos in one click.
+  </p>
 
-    <div class="grid grid-cols-2 gap-8">
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
-        <!-- LEFT -->
-        <div class="bg-white p-6 rounded-xl shadow">
+    <!-- LEFT -->
+    <div class="bg-white p-6 rounded-xl shadow">
 
-            <label class="block mb-2 font-medium">Item Title</label>
-            <input id="title" class="w-full border p-2 rounded mb-4"/>
+      <label class="block mb-2 font-medium">Item Title</label>
+      <input id="title"
+             class="w-full border border-gray-200 rounded-lg p-3 mb-4"/>
 
-            <label class="block mb-2 font-medium">Photos</label>
-            <input id="fileInput" type="file" multiple class="mb-4"/>
+      <label class="block mb-2 font-medium">Photos</label>
+      <input id="fileInput" type="file" multiple class="mb-4"/>
 
-            <div class="mb-4">
-                <label><input type="checkbox" value="ebay" checked> eBay</label>
-                <label class="ml-4"><input type="checkbox" value="poshmark" checked> Poshmark</label>
-                <label class="ml-4"><input type="checkbox" value="mercari"> Mercari</label>
-            </div>
+      <div class="mb-3">
+        <label class="mr-4">
+          <input type="checkbox" value="ebay" checked> eBay
+        </label>
+        <label class="mr-4">
+          <input type="checkbox" value="poshmark" checked> Poshmark
+        </label>
+        <label>
+          <input type="checkbox" value="mercari"> Mercari
+        </label>
+      </div>
 
-            <button id="processBtn"
-                class="w-full bg-black text-white py-3 rounded-lg">
-                Process Photos
-            </button>
-
+      <!-- OUTPUT FILENAME -->
+      <div class="mb-4">
+        <div class="text-xs uppercase text-gray-500 mb-1">Output file</div>
+        <div id="outputName"
+             class="text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+          Batch_PhotoBatcher_YYYY-MM-DD.zip
         </div>
+      </div>
 
-        <!-- RIGHT -->
-        <div class="bg-white p-6 rounded-xl shadow">
-            <h2 class="font-semibold mb-4">Preview</h2>
-            <div id="previewGrid"
-                 class="grid grid-cols-4 gap-4">
-            </div>
-        </div>
+      <button id="processBtn"
+              class="w-full bg-black text-white py-3 rounded-lg">
+        Process Photos
+      </button>
 
     </div>
+
+    <!-- RIGHT -->
+    <div class="bg-white p-6 rounded-xl shadow">
+      <h2 class="font-semibold mb-4">Preview (Max 24)</h2>
+      <div id="previewGrid"
+           class="grid grid-cols-3 sm:grid-cols-4 gap-3"></div>
+    </div>
+
+  </div>
 </div>
 
 <!-- Processing Modal -->
 <div id="modal"
-     class="fixed inset-0 bg-black bg-opacity-40 hidden flex items-center justify-center">
-    <div class="bg-white p-8 rounded-xl shadow-xl text-center">
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
-        <p class="font-medium">Processing your photos...</p>
-        <p class="text-gray-500 text-sm">This can take a moment for large batches.</p>
-    </div>
+     class="fixed inset-0 bg-black/40 hidden items-center justify-center">
+  <div class="bg-white p-8 rounded-xl shadow-xl text-center">
+    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
+    <p class="font-medium">Processing your photos...</p>
+  </div>
 </div>
 
 <script>
-
 const input = document.getElementById("fileInput");
 const grid = document.getElementById("previewGrid");
 const btn = document.getElementById("processBtn");
 const modal = document.getElementById("modal");
+const titleEl = document.getElementById("title");
+const outEl = document.getElementById("outputName");
 
-input.addEventListener("change", () => {
-    grid.innerHTML = "";
-    Array.from(input.files).slice(0,24).forEach(file => {
-        const reader = new FileReader();
-        reader.onload = e => {
-            const img = document.createElement("img");
-            img.src = e.target.result;
-            img.className = "rounded-lg shadow";
-            grid.appendChild(img);
-        };
-        reader.readAsDataURL(file);
-    });
+function slugify(str){
+  str = (str||"").trim();
+  if(!str) return "Batch";
+  return str.replace(/\\s+/g,"_").replace(/[^A-Za-z0-9_\\-]/g,"");
+}
+
+function today(){
+  const d=new Date();
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+
+function updateName(){
+  outEl.textContent = slugify(titleEl.value)+"_PhotoBatcher_"+today()+".zip";
+}
+
+titleEl.addEventListener("input",updateName);
+updateName();
+
+input.addEventListener("change",()=>{
+  grid.innerHTML="";
+  Array.from(input.files).slice(0,24).forEach(file=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const img=document.createElement("img");
+      img.src=e.target.result;
+      img.className="rounded-lg object-cover aspect-square";
+      grid.appendChild(img);
+    };
+    reader.readAsDataURL(file);
+  });
 });
 
-btn.addEventListener("click", async () => {
+btn.addEventListener("click",async()=>{
+  if(!input.files.length) return alert("Select images first.");
 
-    const files = input.files;
-    if (!files.length) return alert("Select images first.");
+  const form=new FormData();
+  Array.from(input.files).forEach(f=>form.append("files",f));
 
-    const form = new FormData();
-    Array.from(files).forEach(f => form.append("files", f));
+  document.querySelectorAll("input[type=checkbox]:checked")
+    .forEach(cb=>form.append("platforms",cb.value));
 
-    document.querySelectorAll("input[type=checkbox]:checked")
-        .forEach(cb => form.append("platforms", cb.value));
+  form.append("item_title",titleEl.value);
 
-    form.append("item_title", document.getElementById("title").value);
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
 
-    modal.classList.remove("hidden");
+  const res=await fetch("/process",{method:"POST",body:form});
 
-    const res = await fetch("/process", {
-        method: "POST",
-        body: form
-    });
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
 
-    modal.classList.add("hidden");
+  if(!res.ok) return alert("Error processing images.");
 
-    if (!res.ok) return alert("Error processing images.");
+  const blob=await res.blob();
+  const url=window.URL.createObjectURL(blob);
 
-    const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "PhotoBatcher.zip";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=outEl.textContent;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 });
-
 </script>
+
 </body>
 </html>
 """
 
-
-# ===============================
-# PROCESS
-# ===============================
 
 @app.post("/process")
 async def process(
@@ -218,10 +263,9 @@ async def process(
     item_title: Optional[str] = Form(None),
 ):
     if not platforms:
-        raise HTTPException(400, "Select platform")
-
+        raise HTTPException(400, "Select at least one platform")
     if len(files) > MAX_IMAGES:
-        raise HTTPException(400, "Max 24 images")
+        raise HTTPException(400, "Maximum 24 images")
 
     title = slugify(item_title)
     date = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -231,8 +275,8 @@ async def process(
     if os.path.exists(PROCESSED_DIR):
         shutil.rmtree(PROCESSED_DIR)
 
-    os.makedirs(UPLOAD_DIR)
-    os.makedirs(PROCESSED_DIR)
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
 
     for f in files:
         with open(os.path.join(UPLOAD_DIR, f.filename), "wb") as buffer:
@@ -240,7 +284,7 @@ async def process(
 
     for platform in platforms:
         folder = os.path.join(PROCESSED_DIR, platform)
-        os.makedirs(folder)
+        os.makedirs(folder, exist_ok=True)
 
         for name in os.listdir(UPLOAD_DIR):
             with Image.open(os.path.join(UPLOAD_DIR, name)) as img:
@@ -251,8 +295,8 @@ async def process(
                 img = enhance(img)
                 img = resize_platform(img, platform)
 
-                base,_ = os.path.splitext(name)
-                img.save(os.path.join(folder, base+".jpg"),
+                base, _ = os.path.splitext(name)
+                img.save(os.path.join(folder, base + ".jpg"),
                          format="JPEG", quality=85)
 
     zip_buffer = BytesIO()
@@ -261,8 +305,8 @@ async def process(
     with zipfile.ZipFile(zip_buffer,"w",zipfile.ZIP_DEFLATED) as zipf:
         for root,_,files_on_disk in os.walk(PROCESSED_DIR):
             for f in files_on_disk:
-                full = os.path.join(root,f)
-                rel = os.path.relpath(full,PROCESSED_DIR)
+                full=os.path.join(root,f)
+                rel=os.path.relpath(full,PROCESSED_DIR)
                 zipf.write(full,os.path.join(parent,rel))
 
     zip_buffer.seek(0)
