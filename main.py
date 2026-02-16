@@ -35,28 +35,24 @@ def slugify(title: str) -> str:
 
 
 # =====================================================
-# STUDIO BACKGROUND LEVELING
+# BACKGROUND LEVELING
 # =====================================================
 
 def level_background(img: Image.Image) -> Image.Image:
     arr = np.array(img).astype(np.float32)
-
     hsv = Image.fromarray(arr.astype(np.uint8)).convert("HSV")
     hsv_arr = np.array(hsv).astype(np.float32)
 
     h, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
-
     mask = (v > 200) & (s < 60)
     v[mask] = np.clip(v[mask] * 1.08 + 10, 0, 255)
 
     hsv_arr[:, :, 2] = v
-
-    new_img = Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
-    return new_img
+    return Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
 
 
 # =====================================================
-# IMAGE PROCESSING PIPELINE
+# IMAGE PIPELINE
 # =====================================================
 
 def smart_crop(img: Image.Image, padding_ratio=0.06) -> Image.Image:
@@ -85,10 +81,10 @@ def smart_crop(img: Image.Image, padding_ratio=0.06) -> Image.Image:
     return img.crop((left, top, right, bottom))
 
 
-def to_square(img: Image.Image, background=(255, 255, 255)) -> Image.Image:
+def to_square(img: Image.Image) -> Image.Image:
     w, h = img.size
     side = max(w, h)
-    canvas = Image.new("RGB", (side, side), background)
+    canvas = Image.new("RGB", (side, side), (255, 255, 255))
     canvas.paste(img, ((side - w) // 2, (side - h) // 2))
     return canvas
 
@@ -114,7 +110,7 @@ def resize_platform(img: Image.Image, platform: str) -> Image.Image:
 
 
 # =====================================================
-# FRONTEND (TEMP STABLE TEST PAGE)
+# FRONTEND UI
 # =====================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -126,11 +122,58 @@ async def home():
         <title>PhotoBatcher</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body class="bg-gray-100 flex items-center justify-center h-screen">
-        <div class="text-center">
-            <h1 class="text-4xl font-bold mb-4">PhotoBatcher</h1>
-            <p class="text-gray-600">Backend is running successfully.</p>
+    <body class="bg-gray-100 min-h-screen flex items-center justify-center p-8">
+        <div class="bg-white shadow-xl rounded-2xl p-8 w-full max-w-xl">
+            <h1 class="text-3xl font-bold mb-6 text-center">PhotoBatcher</h1>
+
+            <form id="uploadForm" class="space-y-4">
+                <input type="text" name="item_title" placeholder="Item Title"
+                    class="w-full border rounded-lg p-2" />
+
+                <input type="file" name="files" multiple required
+                    class="w-full border rounded-lg p-2" />
+
+                <div class="flex gap-4">
+                    <label><input type="checkbox" name="platforms" value="ebay" checked> eBay</label>
+                    <label><input type="checkbox" name="platforms" value="poshmark"> Poshmark</label>
+                    <label><input type="checkbox" name="platforms" value="mercari"> Mercari</label>
+                </div>
+
+                <button type="submit"
+                    class="w-full bg-black text-white rounded-lg py-2">
+                    Process Photos
+                </button>
+            </form>
         </div>
+
+        <script>
+        const form = document.getElementById("uploadForm");
+
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(form);
+
+            const response = await fetch("/process", {
+                method: "POST",
+                body: formData
+            });
+
+            if (!response.ok) {
+                alert("Error processing images.");
+                return;
+            }
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "PhotoBatcher.zip";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        });
+        </script>
     </body>
     </html>
     """
