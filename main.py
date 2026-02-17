@@ -26,8 +26,7 @@ Image.MAX_IMAGE_PIXELS = 50_000_000
 
 app = FastAPI()
 
-# Bump this anytime you deploy changes (helps confirm Render is running latest code)
-VERSION = "auth-sha256-bcrypt-v1"
+VERSION = "stripe-metadata-fix-v2"
 
 # =====================================================
 # ENV CONFIG
@@ -83,7 +82,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_ALG = "HS256"
 COOKIE_NAME = "pb_token"
 
-# 🔥 FIXED PASSWORD HASHING (NO 72 BYTE LIMIT)
 def hash_password(password: str) -> str:
     sha = hashlib.sha256(password.encode()).hexdigest()
     return pwd_context.hash(sha)
@@ -188,35 +186,30 @@ async def me(user: User = Depends(get_current_user)):
     return {"email": user.email, "subscription_active": user.subscription_active}
 
 # ========================
-# STRIPE CHECKOUT
+# STRIPE CHECKOUT (FIXED)
 # ========================
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(request: Request, billing_cycle: str = Form("monthly")):
     user = get_current_user(request)
-    db = SessionLocal()
-    user = db.query(User).filter(User.id == user.id).first()
-
-    if not user.stripe_customer_id:
-        customer = stripe.Customer.create(email=user.email)
-        user.stripe_customer_id = customer.id
-        db.commit()
 
     selected_price = STRIPE_PRICE_ID_ANNUAL if billing_cycle == "annual" else STRIPE_PRICE_ID_MONTHLY
 
     session = stripe.checkout.Session.create(
-        customer=user.stripe_customer_id,
         payment_method_types=["card"],
         mode="subscription",
         line_items=[{"price": selected_price, "quantity": 1}],
         success_url="https://photobatcher.com/success",
         cancel_url="https://photobatcher.com/cancel",
+        metadata={
+            "user_id": str(user.id)
+        }
     )
 
     return {"checkout_url": session.url}
 
 # ========================
-# STRIPE WEBHOOK
+# STRIPE WEBHOOK (FIXED)
 # ========================
 
 @app.post("/stripe-webhook")
@@ -231,21 +224,26 @@ async def stripe_webhook(request: Request):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        customer_id = session.get("customer")
+
+        metadata = session.get("metadata", {})
+        user_id = metadata.get("user_id")
         subscription_id = session.get("subscription")
+        customer_id = session.get("customer")
 
-        db = SessionLocal()
-        user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
+        if user_id:
+            db = SessionLocal()
+            user = db.query(User).filter(User.id == int(user_id)).first()
 
-        if user:
-            user.subscription_active = True
-            user.stripe_subscription_id = subscription_id
-            db.commit()
+            if user:
+                user.subscription_active = True
+                user.stripe_subscription_id = subscription_id
+                user.stripe_customer_id = customer_id
+                db.commit()
 
     return {"status": "success"}
 
 # ========================
-# PROCESS (LOCKED)
+# PROCESS (UNCHANGED)
 # ========================
 
 @app.post("/process")
