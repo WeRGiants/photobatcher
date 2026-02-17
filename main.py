@@ -11,18 +11,14 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image, ImageEnhance, ImageOps, ImageChops
 import numpy as np
 
-# NEW — DATABASE IMPORTS
+# NEW: Database imports
 from sqlalchemy import create_engine, Column, Integer, String, Boolean
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 Image.MAX_IMAGE_PIXELS = 50_000_000
 
 app = FastAPI()
-
-UPLOAD_DIR = "temp_uploads"
-PROCESSED_DIR = "temp_processed"
-MAX_IMAGES = 24
-
 
 # =====================================================
 # DATABASE SETUP
@@ -37,6 +33,9 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# =====================================================
+# USER MODEL
+# =====================================================
 
 class User(Base):
     __tablename__ = "users"
@@ -47,9 +46,16 @@ class User(Base):
     subscription_tier = Column(String, default="starter")  # starter or pro
     is_active = Column(Boolean, default=True)
 
-
+# Create tables automatically
 Base.metadata.create_all(bind=engine)
 
+# =====================================================
+# APP CONFIG
+# =====================================================
+
+UPLOAD_DIR = "temp_uploads"
+PROCESSED_DIR = "temp_processed"
+MAX_IMAGES = 24
 
 # =====================================================
 # Utilities
@@ -63,7 +69,6 @@ def slugify(title: str) -> str:
     title = re.sub(r"[^A-Za-z0-9_\-]", "", title)
     title = re.sub(r"_+", "_", title).strip("_")
     return title or "Batch"
-
 
 # =====================================================
 # Enhancement Pipeline
@@ -81,11 +86,9 @@ def level_background(img: Image.Image) -> Image.Image:
     hsv_arr[:, :, 2] = v
     return Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
 
-
 def smart_crop(img: Image.Image, padding_ratio=0.06) -> Image.Image:
     gray = img.convert("L")
     bg = Image.new("L", gray.size, 255)
-
     diff = ImageChops.difference(gray, bg)
     diff = ImageEnhance.Contrast(diff).enhance(2.0)
 
@@ -107,13 +110,11 @@ def smart_crop(img: Image.Image, padding_ratio=0.06) -> Image.Image:
 
     return img.crop((left, top, right, bottom))
 
-
 def to_square(img: Image.Image) -> Image.Image:
     side = max(img.size)
     canvas = Image.new("RGB", (side, side), (255, 255, 255))
     canvas.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
     return canvas
-
 
 def enhance(img: Image.Image) -> Image.Image:
     img = level_background(img)
@@ -123,26 +124,17 @@ def enhance(img: Image.Image) -> Image.Image:
     img = ImageEnhance.Sharpness(img).enhance(1.05)
     return img
 
-
 def resize_platform(img: Image.Image, platform: str) -> Image.Image:
     sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
     return img.resize((sizes[platform], sizes[platform]), Image.LANCZOS)
 
-
 # =====================================================
-# UI
+# ROUTES
 # =====================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return """ 
-    <!-- YOUR ENTIRE HTML STAYS EXACTLY AS YOU PROVIDED -->
-    """
-
-
-# =====================================================
-# PROCESS
-# =====================================================
+    return "<h1>PhotoBatcher SaaS Backend Running</h1>"
 
 @app.post("/process")
 async def process(
@@ -207,5 +199,5 @@ async def process(
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename=\"{parent}.zip\"'},
     )
