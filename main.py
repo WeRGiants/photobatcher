@@ -3,6 +3,7 @@ import re
 import shutil
 import zipfile
 import datetime
+import hashlib
 from io import BytesIO
 from typing import List, Optional
 
@@ -79,11 +80,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_ALG = "HS256"
 COOKIE_NAME = "pb_token"
 
-def hash_password(pw: str) -> str:
-    return pwd_context.hash(pw)
+# 🔥 FIXED PASSWORD HASHING (NO 72 BYTE LIMIT)
+def hash_password(password: str) -> str:
+    sha = hashlib.sha256(password.encode()).hexdigest()
+    return pwd_context.hash(sha)
 
-def verify_password(pw: str, pw_hash: str) -> bool:
-    return pwd_context.verify(pw, pw_hash)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    sha = hashlib.sha256(plain_password.encode()).hexdigest()
+    return pwd_context.verify(sha, hashed_password)
 
 def create_token(user_id: int):
     exp = datetime.datetime.utcnow() + datetime.timedelta(minutes=JWT_EXPIRE_MINUTES)
@@ -182,10 +186,7 @@ async def me(user: User = Depends(get_current_user)):
 # ========================
 
 @app.post("/create-checkout-session")
-async def create_checkout_session(
-    request: Request,
-    billing_cycle: str = Form("monthly")
-):
+async def create_checkout_session(request: Request, billing_cycle: str = Form("monthly")):
     user = get_current_user(request)
     db = SessionLocal()
     user = db.query(User).filter(User.id == user.id).first()
@@ -271,11 +272,11 @@ async def process(
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
+    sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
+
     for f in files:
         with open(os.path.join(UPLOAD_DIR, f.filename), "wb") as buffer:
             buffer.write(await f.read())
-
-    sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
 
     for platform in platforms:
         folder = os.path.join(PROCESSED_DIR, platform)
@@ -305,5 +306,5 @@ async def process(
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename=\"{parent}.zip\"'},
+        headers={"Content-Disposition": f'attachment; filename="{parent}.zip"'},
     )
