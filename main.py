@@ -7,7 +7,7 @@ from io import BytesIO
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from PIL import Image, ImageEnhance, ImageOps, ImageChops
 import numpy as np
 
@@ -29,7 +29,8 @@ app = FastAPI()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY")
+STRIPE_PRICE_ID_ANNUAL = os.getenv("STRIPE_PRICE_ID_ANNUAL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 if not DATABASE_URL:
@@ -38,8 +39,14 @@ if not DATABASE_URL:
 if not STRIPE_SECRET_KEY:
     raise ValueError("STRIPE_SECRET_KEY not set")
 
-if not STRIPE_PRICE_ID:
-    raise ValueError("STRIPE_PRICE_ID not set")
+if not STRIPE_PRICE_ID_MONTHLY:
+    raise ValueError("STRIPE_PRICE_ID_MONTHLY not set")
+
+if not STRIPE_PRICE_ID_ANNUAL:
+    raise ValueError("STRIPE_PRICE_ID_ANNUAL not set")
+
+if not STRIPE_WEBHOOK_SECRET:
+    raise ValueError("STRIPE_WEBHOOK_SECRET not set")
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -154,7 +161,10 @@ async def home():
 # ========================
 
 @app.post("/create-checkout-session")
-async def create_checkout_session(email: str = Form(...)):
+async def create_checkout_session(
+    email: str = Form(...),
+    billing_cycle: str = Form("monthly")  # monthly or annual
+):
     db = SessionLocal()
     user = db.query(User).filter(User.email == email).first()
 
@@ -166,12 +176,18 @@ async def create_checkout_session(email: str = Form(...)):
         user.stripe_customer_id = customer.id
         db.commit()
 
+    # Select correct price
+    if billing_cycle == "annual":
+        selected_price = STRIPE_PRICE_ID_ANNUAL
+    else:
+        selected_price = STRIPE_PRICE_ID_MONTHLY
+
     session = stripe.checkout.Session.create(
         customer=user.stripe_customer_id,
         payment_method_types=["card"],
         mode="subscription",
         line_items=[{
-            "price": STRIPE_PRICE_ID,
+            "price": selected_price,
             "quantity": 1,
         }],
         success_url="https://photobatcher.com/success",
