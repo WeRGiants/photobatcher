@@ -6,8 +6,10 @@ import datetime
 from io import BytesIO
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response, Depends
 from fastapi.responses import StreamingResponse
+from jose import jwt, JWTError
+from passlib.context import CryptContext
 from PIL import Image, ImageEnhance, ImageOps, ImageChops
 import numpy as np
 
@@ -32,21 +34,20 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY")
 STRIPE_PRICE_ID_ANNUAL = os.getenv("STRIPE_PRICE_ID_ANNUAL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set")
+required_envs = [
+    DATABASE_URL,
+    STRIPE_SECRET_KEY,
+    STRIPE_PRICE_ID_MONTHLY,
+    STRIPE_PRICE_ID_ANNUAL,
+    STRIPE_WEBHOOK_SECRET,
+    JWT_SECRET
+]
 
-if not STRIPE_SECRET_KEY:
-    raise ValueError("STRIPE_SECRET_KEY not set")
-
-if not STRIPE_PRICE_ID_MONTHLY:
-    raise ValueError("STRIPE_PRICE_ID_MONTHLY not set")
-
-if not STRIPE_PRICE_ID_ANNUAL:
-    raise ValueError("STRIPE_PRICE_ID_ANNUAL not set")
-
-if not STRIPE_WEBHOOK_SECRET:
-    raise ValueError("STRIPE_WEBHOOK_SECRET not set")
+if not all(required_envs):
+    raise ValueError("One or more required environment variables are missing")
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -71,82 +72,41 @@ class User(Base):
 Base.metadata.create_all(bind=engine)
 
 # =====================================================
-# APP CONFIG
+# AUTH SETUP
 # =====================================================
 
-UPLOAD_DIR = "temp_uploads"
-PROCESSED_DIR = "temp_processed"
-MAX_IMAGES = 24
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+JWT_ALG = "HS256"
+COOKIE_NAME = "pb_token"
 
-# =====================================================
-# UTILITIES
-# =====================================================
+def hash_password(pw: str) -> str:
+    return pwd_context.hash(pw)
 
-def slugify(title: str) -> str:
-    title = (title or "").strip()
-    if not title:
-        return "Batch"
-    title = title.replace(" ", "_")
-    title = re.sub(r"[^A-Za-z0-9_\-]", "", title)
-    title = re.sub(r"_+", "_", title).strip("_")
-    return title or "Batch"
+def verify_password(pw: str, pw_hash: str) -> bool:
+    return pwd_context.verify(pw, pw_hash)
 
-# =====================================================
-# IMAGE PIPELINE
-# =====================================================
+def create_token(user_id: int):
+    exp = datetime.datetime.utcnow() + datetime.timedelta(minutes=JWT_EXPIRE_MINUTES)
+    payload = {"sub": str(user_id), "exp": exp}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
-def level_background(img):
-    arr = np.array(img).astype(np.float32)
-    hsv = Image.fromarray(arr.astype(np.uint8)).convert("HSV")
-    hsv_arr = np.array(hsv).astype(np.float32)
+def get_current_user(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(401, "Not logged in")
 
-    _, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
-    mask = (v > 200) & (s < 60)
-    v[mask] = np.clip(v[mask] * 1.08 + 10, 0, 255)
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        user_id = int(payload.get("sub"))
+    except (JWTError, ValueError):
+        raise HTTPException(401, "Invalid session")
 
-    hsv_arr[:, :, 2] = v
-    return Image.fromarray(hsv_arr.astype(np.uint8), "HSV").convert("RGB")
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(401, "User not found")
 
-def smart_crop(img, padding_ratio=0.06):
-    gray = img.convert("L")
-    bg = Image.new("L", gray.size, 255)
-    diff = ImageChops.difference(gray, bg)
-    diff = ImageEnhance.Contrast(diff).enhance(2.0)
-    bbox = diff.getbbox()
-    if not bbox:
-        return img
-
-    left, top, right, bottom = bbox
-    w = right - left
-    h = bottom - top
-
-    pad_w = int(w * padding_ratio)
-    pad_h = int(h * padding_ratio)
-
-    left = max(0, left - pad_w)
-    top = max(0, top - pad_h)
-    right = min(img.width, right + pad_w)
-    bottom = min(img.height, bottom + pad_h)
-
-    return img.crop((left, top, right, bottom))
-
-def to_square(img):
-    side = max(img.size)
-    canvas = Image.new("RGB", (side, side), (255, 255, 255))
-    canvas.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
-    return canvas
-
-def enhance(img):
-    img = level_background(img)
-    img = ImageEnhance.Brightness(img).enhance(1.05)
-    img = ImageEnhance.Contrast(img).enhance(1.12)
-    img = ImageEnhance.Color(img).enhance(1.04)
-    img = ImageEnhance.Sharpness(img).enhance(1.05)
-    return img
-
-def resize_platform(img, platform):
-    sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
-    return img.resize((sizes[platform], sizes[platform]), Image.LANCZOS)
+    return user
 
 # =====================================================
 # ROUTES
@@ -157,39 +117,91 @@ async def home():
     return {"status": "PhotoBatcher SaaS Running"}
 
 # ========================
+# AUTH ROUTES
+# ========================
+
+@app.post("/auth/register")
+async def register(email: str = Form(...), password: str = Form(...)):
+    email = email.strip().lower()
+
+    if len(password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+
+    db = SessionLocal()
+    existing = db.query(User).filter(User.email == email).first()
+
+    if existing:
+        raise HTTPException(409, "Email already registered")
+
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        subscription_active=False
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {"status": "registered"}
+
+@app.post("/auth/login")
+async def login(response: Response, email: str = Form(...), password: str = Form(...)):
+    email = email.strip().lower()
+
+    db = SessionLocal()
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user or not verify_password(password, user.password_hash):
+        raise HTTPException(401, "Invalid credentials")
+
+    token = create_token(user.id)
+
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=JWT_EXPIRE_MINUTES * 60,
+    )
+
+    return {"status": "logged_in", "subscription_active": user.subscription_active}
+
+@app.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie(COOKIE_NAME)
+    return {"status": "logged_out"}
+
+@app.get("/me")
+async def me(user: User = Depends(get_current_user)):
+    return {"email": user.email, "subscription_active": user.subscription_active}
+
+# ========================
 # STRIPE CHECKOUT
 # ========================
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(
-    email: str = Form(...),
-    billing_cycle: str = Form("monthly")  # monthly or annual
+    request: Request,
+    billing_cycle: str = Form("monthly")
 ):
+    user = get_current_user(request)
     db = SessionLocal()
-    user = db.query(User).filter(User.email == email).first()
-
-    if not user:
-        raise HTTPException(404, "User not found")
+    user = db.query(User).filter(User.id == user.id).first()
 
     if not user.stripe_customer_id:
-        customer = stripe.Customer.create(email=email)
+        customer = stripe.Customer.create(email=user.email)
         user.stripe_customer_id = customer.id
         db.commit()
 
-    # Select correct price
-    if billing_cycle == "annual":
-        selected_price = STRIPE_PRICE_ID_ANNUAL
-    else:
-        selected_price = STRIPE_PRICE_ID_MONTHLY
+    selected_price = STRIPE_PRICE_ID_ANNUAL if billing_cycle == "annual" else STRIPE_PRICE_ID_MONTHLY
 
     session = stripe.checkout.Session.create(
         customer=user.stripe_customer_id,
         payment_method_types=["card"],
         mode="subscription",
-        line_items=[{
-            "price": selected_price,
-            "quantity": 1,
-        }],
+        line_items=[{"price": selected_price, "quantity": 1}],
         success_url="https://photobatcher.com/success",
         cancel_url="https://photobatcher.com/cancel",
     )
@@ -206,9 +218,7 @@ async def stripe_webhook(request: Request):
     sig_header = request.headers.get("stripe-signature")
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except Exception:
         raise HTTPException(400, "Webhook verification failed")
 
@@ -233,30 +243,30 @@ async def stripe_webhook(request: Request):
 
 @app.post("/process")
 async def process(
-    email: str = Form(...),
+    request: Request,
     files: List[UploadFile] = File(...),
     platforms: Optional[List[str]] = Form(None),
     item_title: Optional[str] = Form(None),
 ):
-    db = SessionLocal()
-    user = db.query(User).filter(User.email == email).first()
+    user = get_current_user(request)
 
-    if not user or not user.subscription_active:
+    if not user.subscription_active:
         raise HTTPException(403, "Active subscription required")
 
     if not platforms:
         raise HTTPException(400, "Select at least one platform")
 
-    if len(files) > MAX_IMAGES:
+    if len(files) > 24:
         raise HTTPException(400, "Maximum 24 images")
 
-    title = slugify(item_title)
+    title = (item_title or "Batch").replace(" ", "_")
     date = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    if os.path.exists(UPLOAD_DIR):
-        shutil.rmtree(UPLOAD_DIR)
-    if os.path.exists(PROCESSED_DIR):
-        shutil.rmtree(PROCESSED_DIR)
+    UPLOAD_DIR = f"temp/{user.id}/uploads"
+    PROCESSED_DIR = f"temp/{user.id}/processed"
+
+    if os.path.exists(f"temp/{user.id}"):
+        shutil.rmtree(f"temp/{user.id}")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
@@ -264,6 +274,8 @@ async def process(
     for f in files:
         with open(os.path.join(UPLOAD_DIR, f.filename), "wb") as buffer:
             buffer.write(await f.read())
+
+    sizes = {"ebay": 1600, "poshmark": 1080, "mercari": 1200}
 
     for platform in platforms:
         folder = os.path.join(PROCESSED_DIR, platform)
@@ -273,19 +285,10 @@ async def process(
             with Image.open(os.path.join(UPLOAD_DIR, name)) as img:
                 img = ImageOps.exif_transpose(img)
                 img = img.convert("RGB")
-                img = smart_crop(img)
-                img = to_square(img)
-                img = enhance(img)
-                img = resize_platform(img, platform)
+                img = img.resize((sizes[platform], sizes[platform]), Image.LANCZOS)
 
                 base, _ = os.path.splitext(name)
-                img.save(
-                    os.path.join(folder, base + ".jpg"),
-                    format="JPEG",
-                    quality=85,
-                    optimize=True,
-                    progressive=True,
-                )
+                img.save(os.path.join(folder, base + ".jpg"), "JPEG", quality=85)
 
     zip_buffer = BytesIO()
     parent = f"{title}_PhotoBatcher_{date}"
