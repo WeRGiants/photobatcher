@@ -26,6 +26,9 @@ Image.MAX_IMAGE_PIXELS = 50_000_000
 
 app = FastAPI()
 
+# Bump this anytime you deploy changes (helps confirm Render is running latest code)
+VERSION = "auth-sha256-bcrypt-v1"
+
 # =====================================================
 # ENV CONFIG
 # =====================================================
@@ -118,7 +121,11 @@ def get_current_user(request: Request):
 
 @app.get("/")
 async def home():
-    return {"status": "PhotoBatcher SaaS Running"}
+    return {"status": "PhotoBatcher SaaS Running", "version": VERSION}
+
+@app.get("/version")
+async def version():
+    return {"version": VERSION}
 
 # ========================
 # AUTH ROUTES
@@ -133,7 +140,6 @@ async def register(email: str = Form(...), password: str = Form(...)):
 
     db = SessionLocal()
     existing = db.query(User).filter(User.email == email).first()
-
     if existing:
         raise HTTPException(409, "Email already registered")
 
